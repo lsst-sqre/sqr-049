@@ -37,14 +37,18 @@ authors:
 copyright: "2020, Association of Universities for Research in Astronomy, Inc. (AURA)"
 
 # Description. A short, 1-2 sentence statemement used by document indices.
-description: "Authentication tokens will be used by the science platform as web authentication credentials, for API and service calls from outside the Science Platform, and for internal service-to-service and notebook-to-service calls. This document lays out the technical design of the token management component, satisfying the requirements given in SQR-044."
+description: >
+  Technical design of the authentication token management component of the
+  Rubin Science Platform.
 
 # Abstract, if available
-# abstract: >
-#           Write your paragraph
-#           here with multiple lines.
-#
-#           You can have multiple paragraphs too.
+abstract: >
+  Authentication tokens will be used by the science platform as web
+  authentication credentials, for API and service calls from outside the
+  Science Platform, and for internal service-to-service and
+  notebook-to-service calls. This document lays out the technical design
+  of the token management component, satisfying the requirements given in
+  SQR-044.
 
 # URL where this document is published by Read the Docs. e.g. http://sqr-001.lsst.codes
 url: "https://sqr-049.lsst.io"

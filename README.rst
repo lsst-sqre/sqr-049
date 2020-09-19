@@ -14,7 +14,8 @@ Science Platform token management design
 SQR-049
 =======
 
-Authentication tokens will be used by the science platform as web authentication credentials, for API and service calls from outside the Science Platform, and for internal service-to-service and notebook-to-service calls. This document lays out the technical design of the token management component, satisfying the requirements given in SQR-044.
+Authentication tokens will be used by the science platform as web authentication credentials, for API and service calls from outside the Science Platform, and for internal service-to-service and notebook-to-service calls.
+This document lays out the technical design of the token management component, satisfying the requirements given in `SQR-044 <https://sqr-044.lsst.io/>`__.
 
 **Links:**
 
