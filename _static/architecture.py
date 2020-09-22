@@ -15,9 +15,7 @@ os.chdir(os.path.dirname(__file__))
 
 graph_attr = {
     "label": "",
-    "nodesep": "0.2",
     "pad": "0.2",
-    "ranksep": "0.75",
 }
 
 node_attr = {
