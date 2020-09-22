@@ -6,9 +6,40 @@ Abstract
 ========
 
 Authentication tokens will be used by the science platform as web authentication credentials, for API and service calls from outside the Science Platform, and for internal service-to-service and notebook-to-service calls.
-This document lays out the technical design of the token management component, satisfying the requirements given in `SQR-044`_.
+This document lays out the technical design of the token management component, satisfying the requirements given in SQR-044_.
 
 .. _SQR-044: https://sqr-044.lsst.io/
+
+Scope
+=====
+
+This design covers the token component in isolation.
+The user management, group management, and quota components will be designed separately.
+That may result in some changes to this design as the rest of the system is built.
+If so, this document will be updated accordingly.
+
+In addition to the requirements in SQR-044_, see SQR-039_ for a discussion of authentication and authorization for the Science Platform.
+
+.. _SQR-039: https://sqr-039.lsst.io/
+
+This specification will be implemented in Gafaelfawr_, the authentication and authorization service for the Rubin Science Platform.
+
+.. _Gafaelfawr: https://gafaelfawr.lsst.io/
+
+User metadata
+-------------
+
+Eventually, metadata about the user as opposed to their session or authentication token (full name, group memberships, UID, etc.) will be stored in a separate user management system that will provide an API to retrieve that information given an authentication token.
+However, that component of the overall identity management system has not yet been built.
+Instead, authorization is currently reliant on user metadata communicated via OAuth 2.0 or OpenID Connect and encoded in the resulting identity token.
+
+Therefore, as an interim measure, user metadata is associated with each authentication token and stored with it.
+The token service provides an API to retrieve that metadata.
+The storage elements and APIs to support this are flagged below and should be considered temporary.
+
+User-created tokens will, temporarily, inherit the user metadata (including group membership) from the session token used to create that user token.
+This means group membership will be encoded in the session data for that token and the token will have to be reissued to change that information, contrary to the design in SQR-044_ and SQR-039_.
+This will be fixed once the user metadata component is available as a separate service.
 
 Storage
 =======
@@ -19,6 +50,9 @@ It contains enough information to verify the authentication of a request and ret
 The SQL database stores metadata about a user's tokens, including the list of currently valid tokens, their relationships to each other, and a history of where they have been used from.
 
 Use of two separate storage systems is unfortunate extra complexity, but Redis is poorly suited to store relational data about tokens or long-term history, while PostgreSQL is poorly suited for quickly handling a high volume of checks for token validity.
+Redis also serves, in this interim design, as the store of user metadata.
+
+Kafka is used to record authentication events and off-load updates of the relevant database tables to a separate process.
 
 Token format
 ------------
@@ -48,39 +82,48 @@ An index of current extant tokens is stored via the following schema:
 
 .. code-block:: sql
 
-   CREATE TYPE token_enum AS ENUM ('session', 'user', 'notebook', 'internal');
-   CREATE TABLE tokens (
-       PRIMARY KEY (key),
-       key        VARCHAR(64)  NOT NULL,
-       name       VARCHAR(64),
-       username   VARCHAR(64)  NOT NULL,
-       token_type token_enum   NOT NULL,
-       scope      VARCHAR(256) NOT NULL,
-       actor      VARCHAR(64),
-       created    TIMESTAMP    NOT NULL,
+   CREATE TYPE token_type_enum AS ENUM (
+       'session',
+       'user',
+       'notebook',
+       'internal'
+   );
+   CREATE TABLE token (
+       PRIMARY KEY (token),
+       token      VARCHAR(64)     NOT NULL,
+       username   VARCHAR(64)     NOT NULL,
+       token_type token_type_enum NOT NULL,
+       token_name VARCHAR(64),
+       scopes     VARCHAR(256),
+       service    VARCHAR(64),
+       created    TIMESTAMP       NOT NULL,
        last_used  TIMESTAMP,
        expires    TIMESTAMP,
-       UNIQUE(username, name)
+       UNIQUE(username, token_name)
    );
-   CREATE INDEX tokens_by_username ON tokens (username, name);
+   CREATE INDEX token_by_username ON token (username, token_type);
 
-The ``actor`` column is only used by internal tokens.
+The ``scopes`` column, if present, is a sorted, comma-separated list of scopes.
+(This representation makes it easier to find an existing subtoken with a desired scope than a normalized table.)
+If a token has a ``scopes`` of ``NULL``, it can be used for any purpose (although some actions are restricted to session tokens).
+The ``service`` column is only used by internal tokens.
 It stores an identifier for the service to which the token was issued and which is acting on behalf of a user.
 
-Internal tokens are derived from non-internal tokens.
+Internal tokens are derived from other tokens.
 That relationship is captured by the following schema:
 
 .. code-block:: sql
 
-   CREATE TABLE subtokens (
+   CREATE TABLE subtoken (
        PRIMARY KEY (id),
        id     SERIAL      NOT NULL,
        parent VARCHAR(64)          REFERENCES tokens ON DELETE SET NULL,
        child  VARCHAR(64) NOT NULL REFERENCES tokens ON DELETE CASCADE
    );
-   CREATE INDEX subtokens_by_scope ON subtokens (parent, scope);
 
-Finally, token usage information is stored in a history table.
+If the parent token is revoked but the child token still exists, the row in this table remains with a ``NULL`` parent to indicate that the token is an orphaned child, which may warrant special treatment.
+
+Token usage information is stored in a history table.
 This will not hold every usage, since that data could be overwhelming for web sessions and other instances of high-frequency calls.
 However, it will attempt to capture the most recent uses from a given IP address.
 
@@ -88,41 +131,196 @@ It doubles as the web session history table, since web sessions are another type
 
 .. code-block:: sql
 
-   CREATE TABLE token_history (
+   CREATE TABLE token_auth_history (
        PRIMARY KEY (id),
-       id         SERIAL       NOT NULL,
-       key        VARCHAR(64)  NOT NULL,
-       name       VARCHAR(64)  NOT NULL,
-       username   VARCHAR(64)  NOT NULL,
-       token_type token_enum   NOT NULL,
+       id         SERIAL            NOT NULL,
+       token      VARCHAR(64)       NOT NULL,
+       username   VARCHAR(64)       NOT NULL,
+       token_type token_type_enum   NOT NULL,
+       token_name VARCHAR(64),
        parent     VARCHAR(64),
-       scope      VARCHAR(256) NOT NULL,
-       actor      VARCHAR(64),
-       ip_address VARCHAR(64),
-       when       TIMESTAMP    NOT NULL
+       scopes     VARCHAR(256)      NOT NULL,
+       service    VARCHAR(64),
+       ip_address INET,
+       event_time TIMESTAMP         NOT NULL
    );
-   CREATE INDEX token_history_by_username (username, when);
+   CREATE INDEX token_auth_history_by_key (key, when);
+   CREATE INDEX token_auth_history_by_username (username, when);
 
-This table stores data even for tokens that have been deleted, so it duplicates some information from the ``tokens`` table rather than adding a foreign key.
+This table stores data even for tokens that have been deleted, so it duplicates some information from the ``token`` table rather than adding a foreign key.
+The ``service`` column has the same meaning as in the ``token`` table.
+The ``scopes`` column holds a comma-separated list of scopes.
+
+Changes to tokens are stored in a separate history table.
+
+.. code-block:: sql
+
+   CREATE TYPE token_action_enum AS ENUM ('create', 'revoke', 'expire', 'edit');
+   CREATE TABLE token_change_history (
+       PRIMARY KEY (id),
+       id             SERIAL            NOT NULL,
+       token          VARCHAR(64)       NOT NULL,
+       username       VARCHAR(64)       NOT NULL,
+       token_type     token_type_enum   NOT NULL,
+       token_name     VARCHAR(64),
+       parent         VARCHAR(64),
+       scopes         VARCHAR(256)      NOT NULL,
+       service        VARCHAR(64),
+       expires        TIMESTAMP,
+       actor          VARCHAR(64),
+       action         token_action_enum NOT NULL,
+       old_token_name VARCHAR(64),
+       old_scopes     VARCHAR(256),
+       old_expires    TIMESTAMP,
+       ip_address     INET,
+       event_time     TIMESTAMP         NOT NULL
+   )
+   CREATE INDEX token_change_history_by_key (key, when);
+   CREATE INDEX token_change_history_by_username (username, when);
+
+The ``actor`` column, if not ``NULL``, indicates that someone other than the user represented by the token took the recorded action.
+It identifies the admin who took that action.
+The ``token_name``, ``scopes``, and ``expires`` fields hold the values for that token at the completion of the recorded action.
+In other words, if the action is ``edit``, they hold the values after the completion of the edit.
+The columns ``old_token_name``, ``old_scopes``, and ``old_expires`` hold the previous values or ``NULL`` if that value wasn't changed.
+They are always ``NULL`` for an action other than ``edit``.
+
+User metadata is not recorded in the ``token_change_history`` table, even though this would be desirable for debugging some issues, because the longer-term goal is to remove all user metadata from the token component of the system.
+
+Finally, token admins are stored in a table:
+
+.. code-block:: sql
+
+   CREATE TABLE admin (
+       PRIMARY KEY (username),
+       username VARCHAR(64) NOT NULL
+   );
+
+and changes to that table are stored in a history table:
+
+.. code-block:: sql
+
+   CREATE TYPE admin_action_enum AS ENUM ('add', 'remove');
+   CREATE TABLE admin_history (
+       PRIMARY KEY (id),
+       id         SERIAL            NOT NULL,
+       username   VARCHAR(64)       NOT NULL,
+       action     admin_action_enum NOT NULL,
+       actor      VARCHAR(64)       NOT NULL,
+       ip_address INET              NOT NULL,
+       event_time TIMESTAMP         NOT NULL
+   );
 
 Redis
 -----
 
 Redis stores a key for each token.
-The Redis key is ``token:<key>`` where ``<key>`` is the key portion of the token, corresponding to the primary key of the ``tokens`` table.
+The Redis key is ``token:<key>`` where ``<key>`` is the key portion of the token, corresponding to the primary key of the ``token`` table.
 The value is an encrypted JSON document with the following keys:
 
 - **secret**: The corresponding secret for this token
 - **username**: The user whose authentication is represented by this token
 - **type**: The type of the token (same as the ``token_type`` column)
-- **scope**: A comma-separated list of scope values
+- **service**: The service to which the token was issued (only present for internal tokens)
+- **scope**: An array of scope values
 - **created**: When the token was created (in seconds since epoch)
 - **expires**: When the token expires (in seconds since epoch)
 
+In addition, the following keys store user metadata taken from the OpenID Connect or OAuth 2.0 id token.
+These fields are temporary and will be dropped once the user management component is complete.
+
+- **name**: The user's preferred full name
+- **uid**: The user's unique numeric UID
+- **groups**: The user's group membership as a list of dicts with two keys, **name** and **id** (the unique numeric GID of the group)
+
 This Redis key will be set to expire when the token expires.
 
-This JSON document is encrypted with `Fernet <https://cryptography.io/en/latest/fernet/>`__ using a key that is private to the authentication system.
+This JSON document is encrypted with Fernet_ using a key that is private to the authentication system.
 This encryption prevents an attacker with access only to the Redis store, but not to the running authentication system or its secrets, from using the Redis keys to reconstruct working tokens.
+
+.. _Fernet: https://cryptography.io/en/latest/fernet/
+
+Kafka
+-----
+
+Putting the latency of a database transaction in the path of each authentication check could cause scaling issues and would defeat the point of storing token information in Redis.
+Therefore, rather than update the ``token`` and ``token_auth_history`` tables on the fly, authentication events are logged to Kafka.
+A separate Kafka listener then reads the stream of authentication events and records them in ``token_auth_history`` and ``tokens.last_used``, possibly batching updates to avoid unnecessary database traffic at the cost of losing some granularity in authentication events.
+
+The following Avro schema is used for authentication events:
+
+.. code-block:: json
+
+   {
+     "type": "record",
+     "name": "auth",
+     "namespace": "gafaelfawr",
+     "doc": "Token authentication event",
+     "fields": [
+       {
+         "name": "token",
+         "type": "string",
+         "doc": "Key of the token"
+       },
+       {
+         "name": "username",
+         "type": "string",
+         "doc": "Username of the user to whom the token was issued"
+       },
+       {
+         "name": "type",
+         "type": "enum",
+         "symbols": ["session", "user", "notebook", "internal"],
+         "doc": "Type of the token"
+       },
+       {
+         "name": "service",
+         "type": "string",
+         "default": "",
+         "doc": "Service to which an internal token was issued"
+       },
+       {
+         "name": "scopes",
+         "type": "array",
+         "items": "string",
+         "default": [],
+         "doc": "Scopes of the token"
+       },
+       {
+         "name": "ip_address",
+         "type": "string",
+         "default": "",
+         "doc": "Client IP address of authentication event"
+       },
+       {
+         "name": "timestamp",
+         "type": "long",
+         "doc": "Time of event in seconds since epoch"
+       }
+     ]
+   }
+
+Other information about the token not present in Redis but stored in the ``token_auth_history`` table, such as its current user-given name and the parent of an internal token, will be looked up in the database when the event is stored.
+
+Kafka is not used for token changes.
+Since those already require database modifications, the changes to the ``token_change_history`` table are written in the same transaction as the changes to the token.
+
+Housekeeping
+------------
+
+To handle token expiration, a job must run periodically that looks for tokens that have expired.
+For each token found:
+
+#. Find all child tokens via the ``subtoken`` table.
+   All of those tokens should also be expired since they inherit the expiration of the parent token.
+   (If not, this is a bug that should be reported.)
+   Process the expiration of those tokens first by following this list of actions, and then return to the parent token.
+#. Delete the token from ``token`` (which will cause cascading deletes from ``token_scopes`` and ``subtoken``).
+#. Add an entry to ``token_change_history`` with the metadata values of the token and an ``action`` of ``expire``.
+#. Delete the token from Redis if it exists (it shouldn't due to the expiration set on the Redis entry).
+
+The system should also perform periodic consistency checks looking for tokens in Redis but not in the ``token`` table or vice versa, orphaned child tokens (entries in ``subtoken`` with a ``NULL`` for ``parent``), circular token relationships, unknown services, unknown scopes, or scope columns that aren't in sorted order or separated by commas.
+Inconsistencies such as these should be flagged for an administrator.
 
 .. _api:
 
@@ -149,7 +347,7 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     .. code-block:: json
 
        {
-         csrf: "d56de7d8c6d90cc4a279666156c5923f"
+         "csrf": "d56de7d8c6d90cc4a279666156c5923f"
        }
 
 ``GET /auth/api/v1/tokens``
@@ -161,7 +359,7 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
        [
          {
-           "key": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
            "username": "alice",
            "token_type": "session",
            "created": 1600723604,
@@ -169,7 +367,7 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
            "expires": 1600810004,
          },
          {
-           "key": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
+           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
            "username": "alice",
            "token_type": "notebook",
            "created": 1600723606,
@@ -177,11 +375,11 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
            "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
          },
          {
-           "key": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
            "username": "alice",
-           "name": "personal laptop",
+           "token_name": "personal laptop",
            "token_type": "user",
-           "scope": "user:read, user:write",
+           "scopes": ["user:read", "user:write"],
            "created": 1600723681,
            "last_used": 1600723682
          }
@@ -196,14 +394,14 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
        [
          {
-           "key": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
            "created": 1600723604,
            "last_used": 1600723604,
            "expires": 1600810004,
          },
          {
-           "key": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
+           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
            "username": "alice",
            "token_type": "notebook",
            "created": 1600723606,
@@ -211,11 +409,11 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
            "parent": "/auth/api/v1/tokens/DpBVCadJpTC-uB7NH2TYiQ"
          },
          {
-           "key": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
            "username": "alice",
-           "name": "personal laptop",
+           "token_name": "personal laptop",
            "token_type": "user",
-           "scope": "user:read, user:write",
+           "scopes": ["user:read", "user:write"],
            "created": 1600723681,
            "last_used": 1600723682
          }
@@ -236,11 +434,11 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     .. code-block:: json
 
        {
-         "key": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+         "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
          "username": "alice",
-         "name": "personal laptop",
+         "token_name": "personal laptop",
          "token_type": "user",
-         "scope": "user:read, user:write",
+         "scopes": ["user:read", "user:write"],
          "created": 1600723681,
          "expires": 1600727294,
          "last_used": 1600723682
@@ -264,20 +462,44 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     .. code-block:: json
 
        {
-         "key": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+         "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
          "username": "alice",
-         "name": "personal laptop",
+         "token_name": "personal laptop",
          "token_type": "user",
-         "scope": "user:read, user:write",
+         "scopes": ["user:read", "user:write"],
          "created": 1600723681,
          "expires": 1600727294,
          "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
        }
 
-``GET /auth/api/v1/users/{username}/token-history``
+``GET /auth/api/v1/user-info``
+    Returns user metadata for the user authenticated by the provided token.
+    This is a temporary API until the user management service is available.
+    It returns information from the upstream OAuth 2.0 or OpenID Connect provider that was cached in the token session.
+    Example:
+
+    .. code-block:: json
+
+       {
+         "username": "alice",
+         "name": "Alice Example",
+         "uid": 24187,
+         "groups": [
+           {
+             "id": 4173,
+             "name": "example-group"
+           },
+           {
+             "id": 5671,
+             "name": "other-group"
+           }
+         ]
+       }
+
+``GET /auth/api/v1/users/{username}/token-auth-history``
     Get a history of authentication events for the given user.
     Only administrators may specify a username other than their own.
-    The range of events can be controlled by pagination parameters included in the URL:
+    The range of events can be controlled by pagination and search parameters included in the URL:
 
     - ``offset``: Skip the first N elements
     - ``limit``: Return only N elements
@@ -285,6 +507,7 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     - ``until``: Return only events until this timestamp
     - ``key``: Limit to authentications involving the given key (including child tokens of that key)
     - ``token_type``: Limit to authentications with the given token type
+    - ``ip_address``: Limit to events from the given IP address or `CIDR block`_
 
     Example:
 
@@ -292,29 +515,147 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
        [
          {
-           "key": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
            "ip_address": "192.88.99.2",
-           "when": 1600725470
+           "timestamp": 1600725470
          },
          {
-           "key": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
+           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
            "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "notebook",
-           "when": 1600725676
+           "timestamp": 1600725676
          },
          {
-           "key": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
-           "name": "personal laptop",
+           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token_name": "personal laptop",
            "token_type": "user",
-           "scope": "user:read, user:write",
+           "scopes": ["user:read", "user:write"],
            "ip_address": "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-           "when": 1600725767
+           "timestamp": 1600725767
          }
        ]
 
     Available history will be limited by the granularity of history event storage.
     For example, multiple web accesses in a short period of time may be aggregated into a single authentication event.
+
+.. _CIDR block: https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing
+
+``GET /auth/api/v1/users/{username}/token-change-history``
+    Get a history of token creation, revocation, and edit events for the given user.
+    Only administrators may specify a username other than their own.
+    The range of events can be controlled by pagination and search parameters included in the URL:
+
+    - ``offset``: Skip the first N elements
+    - ``limit``: Return only N elements
+    - ``since``: Return only events after this timestamp
+    - ``until``: Return only events until this timestamp
+    - ``key``: Limit to events involving the given key (including child tokens of that key)
+    - ``token_type``: Limit to events with the given token type
+    - ``ip_address``: Limit to events from the given IP address or CIDR block
+
+    Example:
+
+    .. code-block:: json
+
+       [
+         {
+           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token_type": "session",
+           "action": "create",
+           "ip_address": "192.88.99.2",
+           "timestamp": 1600725470
+         },
+         {
+           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token_type": "session",
+           "action": "revoke",
+           "ip_address": "192.88.99.5",
+           "timestamp": 1600725470
+         },
+         {
+           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token_name": "personal laptop",
+           "token_type": "user",
+           "scopes": ["user:read", "user:write"],
+           "actor": "charlotte",
+           "action": "edit",
+           "old_scopes": ["user:read"],
+           "ip_address": "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+           "timestamp": 1600725767
+         }
+       ]
+
+``GET /auth/api/v1/admins``
+    Get the list of current administrators.
+    This API is limited to administrators.
+    Example:
+
+    .. code-block:: json
+
+       [
+         {
+           "username": "charlotte"
+         }
+       ]
+
+``POST /auth/api/v1/admins``
+    Add a new administrator.
+    This API is limited to administrators.
+
+``DELETE /auth/api/v1/admins/{username}``
+    Remove an administrator.
+    This API is limited to administrators.
+    The last administrator cannot be removed.
+
+``GET /auth/api/v1/history/admins``
+    Get a history of changes to the list of administrators.
+    This API is limited to administrators.
+    Example:
+
+    .. code-block:: json
+
+       [
+         {
+           "username": "charlotte",
+           "action": "add",
+           "actor": "alice",
+           "ip_address": "192.88.99.4",
+           "timestamp": 1600812808
+         }
+       ]
+
+``GET /auth/api/v1/history/token-auth``
+    Get a history of token authentications.
+    This API is limited to administrators.
+    The range of events can be controlled by pagination and search parameters included in the URL:
+
+    - ``offset``: Skip the first N elements
+    - ``limit``: Return only N elements
+    - ``since``: Return only events after this timestamp
+    - ``until``: Return only events until this timestamp
+    - ``username``: Limit to events for the given username
+    - ``key``: Limit to events involving the given key (including child tokens of that key)
+    - ``token_type``: Limit to events with the given token type
+    - ``ip_address``: Limit to events from the given IP address or CIDR block
+
+    The output is the same as ``/auth/api/v1/users/{username}/token-auth-history`` except that the ``username`` field is included in each returned record.
+
+``GET /auth/api/v1/history/token-changes``
+    Get a history of token changes.
+    This API is limited to administrators.
+    The range of events can be controlled by pagination and search parameters included in the URL:
+
+    - ``offset``: Skip the first N elements
+    - ``limit``: Return only N elements
+    - ``since``: Return only events after this timestamp
+    - ``until``: Return only events until this timestamp
+    - ``username``: Limit to events for the given username
+    - ``key``: Limit to events involving the given key (including child tokens of that key)
+    - ``token_type``: Limit to events with the given token type
+    - ``ip_address``: Limit to events from the given IP address or CIDR block
+
+    The output is the same as ``/auth/api/v1/users/{username}/token-change-history`` except that the ``username`` field is included in each returned record.
 
 .. _api-security:
 
@@ -353,11 +694,11 @@ General users will have access to the following pages:
 Token list
     Lists all of the unexpired tokens for the current user.
     The token list is divided into separate sections for web sessions, user-created tokens, and notebook tokens, with internal tokens shown under their parent tokens.
-    The last-used time is shown with each token, rendered as a human-readable delta from the current time (for example, "10 minutes ago" or "1 month ago") with a more accurate timestamp available via mouseover or some other interface.
+    The last-used time is shown with each token, rendered as a human-readable delta from the current time (for example, "10 minutes ago" or "1 month ago") with a more accurate timestamp available via mouse-over or some other interface.
     From this list the user can revoke any token.
 
 View a specific token
-    Shows the details for a single token, including its authentication history.
+    Shows the details for a single token, including its modification and authentication history.
     The user can also revoke the token from this page.
 
 Create new token
@@ -370,15 +711,29 @@ Modify a token
 
 Token authentication history
     Shows a paginated list of token authentication events for the user, divided into web sessions, user-created tokens, notebook tokens, and internal tokens.
-    The user can limit by token type or date, or click on a token to see its details and the authentication events relevant to it.
+    The user can limit by token type or date, or click on a token to see its details.
+
+Token modification history
+    Shows a paginated list of token creation, revocation, and modification events for the user, divided into web sessions, user-created tokens, notebook tokens, and internal tokens.
+    The user can limit by token type or event date, or click on a token to see its details.
 
 Admin interface
 ---------------
 
-Any admin user can impersonate a user and see the same pages that user would see.
+Any administrator can impersonate a user and see the same pages that user would see.
 When this is happening, every page displays a banner indicating that impersonation is being done and identifying the actual user.
 
-Admin users also have access to two additional pages:
+Administrators also have access to additional pages:
+
+Admin list
+    List all current administrators.
+    An administrator can be deleted from this page if they aren't the last administrator.
+    A new administrator can be added by username.
+    Currently, usernames are not validated.
+    Eventually, they will be validated against the user management system.
+
+Admin history
+    Lists (with pagination) changes to the list of administrators.
 
 Admin token list
     Lists (with pagination) all of the current-valid tokens known to the system.
@@ -390,4 +745,49 @@ Admin token view
 
 Admin token authentication history
     Shows a paginated list of all recent token authentication events.
-    Allows restricting by IP address pattern, token types, users, and date range.
+    Allows restricting by IP address or CIDR block, token types, users, and date range.
+
+Admin token modification history
+    Shows a paginated list of all recent token creation, revocation, and modification events.
+    Allows restricting by IP address or CIDR block, token types, users, and date range.
+
+Security
+--------
+
+The React_ web UI will not attempt to authenticate the user internally.
+Instead, it will make an authentication request to the backend server using the ``/auth/api/v1/login`` route to get a CSRF token.
+That and all other API requests will be authenticated via session cookie, which contains a session token.
+
+Details on how that session cookie is created are out of scope for this design.
+See the Gafaelfawr_ documentation for more information.
+
+``auth_request`` API
+====================
+
+The primary interaction most Rubin Science Platform components will have with the token management system is via an NGINX ``auth_request`` handler.
+When configured this way, each incoming request to a protected resource results in a subrequest to Gafaelfawr_, which grants or denies the request based on included authentication information.
+If the request is granted, additional information is passed to the backend via headers.
+
+The ``auth_request`` handler is provided on the ``/auth`` route.
+The following parameters may be specified as ``GET`` parameters to that route.
+
+- ``scope``: The scope required to allow access.
+- ``notebook``: If set to a true value, requests a notebook token be passed via a header along with the request.
+- ``delegate_to``: Requests an internal token that will be passed via a header along with the request.
+  The value of this parameter is an identifier for the service that will use this subtoken to make additional requests on behalf of the user.
+- ``delegate_scope``: A comma-separated list of scopes that the subtoken should have.
+  This must be a subset of the scopes the authenticating token has, or the ``auth_request`` handler will deny access.
+
+The ``delegate_to`` and ``notebook`` parameters are mutually exclusive.
+The ``auth_request`` handler may support other parameters unrelated to the token management component.
+
+Internal tokens
+---------------
+
+When an internal token is requested via the ``delegate_to`` parameter, the ``auth_request`` handler will find a child token of the current token with the appropriate ``service`` and ``scope`` values.
+If one does not exist, a new child token with appropriate values will be created.
+This child token inherits its expiration and other values (such as the temporarily-stored user metadata) from the parent token.
+The parent token may be of any type, including another internal token, creating chains of delegated tokens.
+
+To avoid the latency of database queries in the common case of multiple requests with the same token to a service requesting the same ``service`` and ``scope`` values for an internal token, the ``auth_request`` handler may internally cache a mapping of parent token to child tokens for given ``service`` and ``scope`` values.
+As long as the referenced child token is still valid according to Redis, this mapping may be cached for up to the expiration time of the child token.
