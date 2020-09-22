@@ -41,6 +41,14 @@ User-created tokens will, temporarily, inherit the user metadata (including grou
 This means group membership will be encoded in the session data for that token and the token will have to be reissued to change that information, contrary to the design in SQR-044_ and SQR-039_.
 This will be fixed once the user metadata component is available as a separate service.
 
+Overview
+========
+
+.. figure:: /_static/architecture.png
+   :name: Token management architecture
+
+   Token management architecture
+
 Storage
 =======
 
