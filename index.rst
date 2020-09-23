@@ -152,8 +152,8 @@ It doubles as the web session history table, since web sessions are another type
        ip_address INET,
        event_time TIMESTAMP         NOT NULL
    );
-   CREATE INDEX token_auth_history_by_key (key, when);
-   CREATE INDEX token_auth_history_by_username (username, when);
+   CREATE INDEX token_auth_history_by_token (token, event_time);
+   CREATE INDEX token_auth_history_by_username (username, event_time);
 
 This table stores data even for tokens that have been deleted, so it duplicates some information from the ``token`` table rather than adding a foreign key.
 The ``service`` column has the same meaning as in the ``token`` table.
@@ -183,8 +183,8 @@ Changes to tokens are stored in a separate history table.
        ip_address     INET,
        event_time     TIMESTAMP         NOT NULL
    )
-   CREATE INDEX token_change_history_by_key (key, when);
-   CREATE INDEX token_change_history_by_username (username, when);
+   CREATE INDEX token_change_history_by_token (token, event_time);
+   CREATE INDEX token_change_history_by_username (username, event_time);
 
 The ``actor`` column, if not ``NULL``, indicates that someone other than the user represented by the token took the recorded action.
 It identifies the admin who took that action.
