@@ -219,6 +219,7 @@ and changes to that table are stored in a history table:
        ip_address INET              NOT NULL,
        event_time TIMESTAMP         NOT NULL
    );
+   CREATE INDEX admin_history_by_event_time ON admin_history (event_time);
 
 Redis
 -----
