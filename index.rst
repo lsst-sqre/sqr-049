@@ -128,6 +128,7 @@ That relationship is captured by the following schema:
        parent VARCHAR(64)          REFERENCES token ON DELETE SET NULL,
        child  VARCHAR(64) NOT NULL REFERENCES token ON DELETE CASCADE
    );
+   CREATE INDEX subtoken_by_parent ON subtoken (parent);
 
 If the parent token is revoked but the child token still exists, the row in this table remains with a ``NULL`` parent to indicate that the token is an orphaned child, which may warrant special treatment.
 
