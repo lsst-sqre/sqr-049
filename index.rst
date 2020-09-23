@@ -324,7 +324,7 @@ For each token found:
 #. Find all child tokens via the ``subtoken`` table.
    All of those tokens should also be expired since they inherit the expiration of the parent token.
    (If not, this is a bug that should be reported.)
-   Process the expiration of those tokens first by following this list of actions, and then return to the parent token.
+   Recursively process the expiration of those tokens first by following this list of actions, and then return to the parent token.
 #. Delete the token from ``token`` (which will cause cascading deletes from ``token_scopes`` and ``subtoken``).
 #. Add an entry to ``token_change_history`` with the metadata values of the token and an ``action`` of ``expire``.
 #. Delete the token from Redis if it exists (it shouldn't due to the expiration set on the Redis entry).
@@ -434,7 +434,7 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     Only administrators may specify a username other than their own.
     Only user tokens may be created this way.
     Tokens of other types are created through non-API flows described later.
-    The name, scope, and desired expiration are provided as parameters.
+    The token name, scopes, and desired expiration are provided as parameters.
 
 ``GET /auth/api/v1/users/{username}/tokens/{key}``
     Return the information for a specific token.
@@ -457,12 +457,12 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 ``PATCH /auth/api/v1/users/{username}/tokens/{key}``
     Update data for a token.
     Only administrators may specify a username other than their own.
-    Only the ``name``, ``scope``, and ``expires`` properties can be changed.
+    Only the ``token_name``, ``scopes``, and ``expires`` properties can be changed.
 
 ``DELETE /auth/api/v1/users/{username}/tokens/{key}``
     Revoke a token.
     Only administrators may specify a username other than their own.
-    This also revokes all child tokens of that token.
+    This also recursively revokes all child tokens of that token.
 
 ``GET /auth/api/v1/token-info``
     Return information about the provided authentication token.
