@@ -49,6 +49,34 @@ Overview
 
    Token management architecture
 
+Expected flow
+-------------
+
+Here are some typical user token authentication flows.
+
+* User authenticates using an identity provider and obtains a session token.
+  (Initial session token issuance is outside the scope of this design; see Gafaelfawr_ for more information.)
+* User accesses an application.
+  The token is retrieved from the session and checked against the required scope for that application via the ``auth_request`` handler.
+* User spawns a notebook.
+  The notebook spawner requests a notebook token via the ``auth_request`` handler.
+  A new notebook token is created as a subtoken of the session token and made available to the notebook spawner via a request header.
+  The notebook spawner arranges to make that token available to the spawned notebook server.
+* User makes a request via a web interface that requires talking to another backend service.
+  The web service requests an internal token via the ``auth_request`` handler with appropriate scope.
+  The web service receives that token and uses it to make requests on behalf of the user.
+  This may repeat recursively if that backend service needs to make requests to another service.
+* User makes a request via an API from their notebook server.
+  The notebook token is used for this request and checked by the ``auth_request`` handler.
+* User makes a request via an API from the notebook server that requires making subrequests on the user's behalf.
+  This follows the same pattern as the equivalent case with a web UI: the backend service requests a subtoken and uses it.
+* User goes to the token management page and creates a user token.
+  This is created as a new token, not as a subtoken of the session token, but (for now) inherits the user metadata from the session token.
+  User stores that token locally on their laptop and uses it to make a request to an API service.
+  The token is checked by the ``auth_request`` handler.
+* User makes an API call with their user token that requires making subrequests to other services.
+  This proceeds as with web UIs and notebook API calls.
+
 Storage
 =======
 
