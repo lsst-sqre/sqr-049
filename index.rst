@@ -255,7 +255,7 @@ Kafka
 
 Putting the latency of a database transaction in the path of each authentication check could cause scaling issues and would defeat the point of storing token information in Redis.
 Therefore, rather than update the ``token`` and ``token_auth_history`` tables on the fly, authentication events are logged to Kafka.
-A separate Kafka listener then reads the stream of authentication events and records them in ``token_auth_history`` and ``tokens.last_used``, possibly batching updates to avoid unnecessary database traffic at the cost of losing some granularity in authentication events.
+A separate Kafka listener then reads the stream of authentication events and records them in ``token_auth_history`` and ``token.last_used``, possibly batching updates to avoid unnecessary database traffic at the cost of losing some granularity in authentication events.
 
 The following Avro schema is used for authentication events:
 
