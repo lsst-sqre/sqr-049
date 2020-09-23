@@ -353,7 +353,7 @@ For each token found:
    All of those tokens should also be expired since they inherit the expiration of the parent token.
    (If not, this is a bug that should be reported.)
    Recursively process the expiration of those tokens first by following this list of actions, and then return to the parent token.
-#. Delete the token from ``token`` (which will cause cascading deletes from ``token_scopes`` and ``subtoken``).
+#. Delete the token from ``token`` (which will cause a cascading delete from ``subtoken``).
 #. Add an entry to ``token_change_history`` with the metadata values of the token and an ``action`` of ``expire``.
 #. Delete the token from Redis if it exists (it shouldn't due to the expiration set on the Redis entry).
 
@@ -492,48 +492,6 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     Only administrators may specify a username other than their own.
     This also recursively revokes all child tokens of that token.
 
-``GET /auth/api/v1/token-info``
-    Return information about the provided authentication token.
-    (The last used time is nonsensical for this API and is therefore omitted.)
-    Example:
-
-    .. code-block:: json
-
-       {
-         "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
-         "username": "alice",
-         "token_name": "personal laptop",
-         "token_type": "user",
-         "scopes": ["user:read", "user:write"],
-         "created": 1600723681,
-         "expires": 1600727294,
-         "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
-       }
-
-``GET /auth/api/v1/user-info``
-    Returns user metadata for the user authenticated by the provided token.
-    This is a temporary API until the user management service is available.
-    It returns information from the upstream OAuth 2.0 or OpenID Connect provider that was cached in the token session.
-    Example:
-
-    .. code-block:: json
-
-       {
-         "username": "alice",
-         "name": "Alice Example",
-         "uid": 24187,
-         "groups": [
-           {
-             "id": 4173,
-             "name": "example-group"
-           },
-           {
-             "id": 5671,
-             "name": "other-group"
-           }
-         ]
-       }
-
 ``GET /auth/api/v1/users/{username}/token-auth-history``
     Get a history of authentication events for the given user.
     Only administrators may specify a username other than their own.
@@ -623,6 +581,48 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
            "timestamp": 1600725767
          }
        ]
+
+``GET /auth/api/v1/token-info``
+    Return information about the provided authentication token.
+    (The last used time is nonsensical for this API and is therefore omitted.)
+    Example:
+
+    .. code-block:: json
+
+       {
+         "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+         "username": "alice",
+         "token_name": "personal laptop",
+         "token_type": "user",
+         "scopes": ["user:read", "user:write"],
+         "created": 1600723681,
+         "expires": 1600727294,
+         "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
+       }
+
+``GET /auth/api/v1/user-info``
+    Returns user metadata for the user authenticated by the provided token.
+    This is a temporary API until the user management service is available.
+    It returns information from the upstream OAuth 2.0 or OpenID Connect provider that was cached in the token session.
+    Example:
+
+    .. code-block:: json
+
+       {
+         "username": "alice",
+         "name": "Alice Example",
+         "uid": 24187,
+         "groups": [
+           {
+             "id": 4173,
+             "name": "example-group"
+           },
+           {
+             "id": 5671,
+             "name": "other-group"
+           }
+         ]
+       }
 
 ``GET /auth/api/v1/admins``
     Get the list of current administrators.
