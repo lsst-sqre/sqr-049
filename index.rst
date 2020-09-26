@@ -333,7 +333,8 @@ The following Avro schema is used for authentication events:
        {
          "name": "timestamp",
          "type": "long",
-         "doc": "Time of event in seconds since epoch"
+         "logicalType": "timestamp-millis",
+         "doc": "Time of event"
        }
      ]
    }
