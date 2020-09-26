@@ -839,3 +839,52 @@ The parent token may be of any type, including another internal token, creating 
 
 To avoid the latency of database queries in the common case of multiple requests with the same token to a service requesting the same ``service`` and ``scope`` values for an internal token, the ``auth_request`` handler may internally cache a mapping of parent token to child tokens for given ``service`` and ``scope`` values.
 As long as the referenced child token is still valid according to Redis, this mapping may be cached for up to the expiration time of the child token.
+
+References
+==========
+
+Here are some useful source documents I relied on for this design.
+
+Blog posts
+----------
+
+`Best Practices for Designing a Pragmatic RESTful API`_
+    An excellent and opinionated discussion of various areas of RESTful API design that isn't tied to any specific framework or standard.
+
+`Five ways to paginate in Postgres`_
+    A discussion of tradeoffs between pagination techniques in PostgreSQL, including low-level database performance and PostgreSQL-specific features.
+
+`JSON API, OpenAPI and JSON Schema Working in Harmony`_
+    Considerations for which standards to use when designing a JSON REST API.
+
+`The Benefits of Using JSON API`_
+    An overview of JSON:API with a comparison to GraphQL.
+
+.. _Best Practices for Designing a Pragmatic RESTful API: https://www.vinaysahni.com/best-practices-for-a-pragmatic-restful-api
+.. _Five ways to paginate in Postgres: https://www.citusdata.com/blog/2016/03/30/five-ways-to-paginate/
+.. _JSON API, OpenAPI and JSON Schema Working in Harmony: https://apisyouwonthate.com/blog/json-api-openapi-and-json-schema-working-in-harmony
+.. _The Benefits of Using JSON API: https://nordicapis.com/the-benefits-of-using-json-api/
+
+Standards
+---------
+
+`JSON:API`_
+    The (at the time of this writing) release candidate for the upcoming JSON:API 1.1 specification.
+
+OpenAPI_
+    The OpenAPI specification for RESTful APIs.
+    Provides a schema and description of an API and supports automatic documentation generation.
+    Used by FastAPI_.
+
+`RFC 7807`_
+    This document defines a "problem detail" as a way to carry machine-readable details of errors in a HTTP response to avoid the need to define new error response formats for HTTP APIs.
+
+`RFC 8288`_
+    This specification defines a model for the relationships between resources on the Web ("links") and the type of those relationships ("link relation types").
+    It also defines the serialisation of such links in HTTP headers with the Link header field.
+
+.. _FastAPI: https://fastapi.tiangolo.com/
+.. _JSON:API: https://jsonapi.org/format/1.1/
+.. _OpenAPI: https://swagger.io/specification/
+.. _RFC 7807: https://tools.ietf.org/html/rfc7807
+.. _RFC 8288: https://tools.ietf.org/html/rfc8288
