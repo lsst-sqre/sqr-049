@@ -358,8 +358,17 @@ For each token found:
 #. Add an entry to ``token_change_history`` with the metadata values of the token and an ``action`` of ``expire``.
 #. Delete the token from Redis if it exists (it shouldn't due to the expiration set on the Redis entry).
 
-The system should also perform periodic consistency checks looking for tokens in Redis but not in the ``token`` table or vice versa, orphaned child tokens (entries in ``subtoken`` with a ``NULL`` for ``parent``), circular token relationships, unknown services, unknown scopes, or scope columns that aren't in sorted order or separated by commas.
-Inconsistencies such as these should be flagged for an administrator.
+Housekeeping will also periodically delete all rows in the history tables older than a configurable cutoff period to keep those tables from growing without bound.
+
+Finally, housekeeping will perform periodic consistency checks looking for tokens in Redis but not in the ``token`` table or vice versa, orphaned child tokens (entries in ``subtoken`` with a ``NULL`` for ``parent``), circular token relationships, unknown services, unknown scopes, or scope columns that aren't in sorted order or separated by commas.
+Inconsistencies such as these will be flagged for an administrator.
+
+Bootstrapping
+-------------
+
+A command-line utility will bootstrap a new installation of the token management system by creating the necessary database schema.
+To bootstrap administrative access, this step will take the username of the first administrator as an argument and initialize the ``admin`` table with that one member.
+That administrator can then use the API or web interface to add additional administrators.
 
 .. _api:
 
