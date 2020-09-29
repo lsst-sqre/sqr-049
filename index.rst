@@ -375,15 +375,29 @@ That administrator can then use the API or web interface to add additional admin
 API
 ===
 
-Routes
-------
-
 All URLs for the REST API for token manipulation start with ``/auth/api/v1``.
+The API will be implemented using FastAPI_.
+
 This is a sketch of the critical pieces of the API rather than a complete specification.
 The full OpenAPI specification of the token API will be maintained as part of the implementation.
 
 In the examples below, the URLs are given as relative URLs.
 In a production deployment, they would be fully-qualified ``https`` URLs that include the deployment hostname.
+
+The API is divided into two parts: routes that may be used by an individual user to manage and view their own tokens, and routes that may only be used by an administrator.
+The first routes can also be used by an administrator and, unlike an individual user, an administrator can specify a username other than their own.
+
+There is some minor duplication in routes (``/auth/api/v1/tokens`` versus ``/auth/api/v1/users/{username}/tokens`` and similarly for token authentication and change history).
+This was done to simplify the security model.
+Users may only use the routes under the ``users`` collection with their own username.
+The routes under ``/tokens`` and ``/history`` allow searching for any username or seeing results across all usernames and are limited to administrators.
+This could have instead been enforced in more granular authorization checks on the more general routes, but this approach seemed simpler and easier to understand.
+It also groups all of a user's data under ``/users/{username}`` and is potentially extensible to other APIs later.
+
+User routes
+-----------
+
+For all routes listed below with a ``username`` path parameter, only administrators may specify a username other than their own.
 
 ``POST /auth/api/v1/login``
     Used only by the web frontend.
@@ -398,44 +412,8 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
          "csrf": "d56de7d8c6d90cc4a279666156c5923f"
        }
 
-``GET /auth/api/v1/tokens``
-    Return all extant tokens.
-    This API is limited to administrators.
-    Example:
-
-    .. code-block:: json
-
-       [
-         {
-           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
-           "username": "alice",
-           "token_type": "session",
-           "created": 1600723604,
-           "last_used": 1600723604,
-           "expires": 1600810004,
-         },
-         {
-           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
-           "username": "alice",
-           "token_type": "notebook",
-           "created": 1600723606,
-           "expires": 1600810004,
-           "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
-         },
-         {
-           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
-           "username": "alice",
-           "token_name": "personal laptop",
-           "token_type": "user",
-           "scopes": ["user:read", "user:write"],
-           "created": 1600723681,
-           "last_used": 1600723682
-         }
-       ]
-
 ``GET /auth/api/v1/users/{username}/tokens``
     Return all tokens for the given user.
-    Only administrators may specify a username other than their own.
     Example:
 
     .. code-block:: json
@@ -469,14 +447,12 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
 ``POST /auth/api/v1/users/{username}/tokens``
     Create a new token for the given user.
-    Only administrators may specify a username other than their own.
     Only user tokens may be created this way.
     Tokens of other types are created through non-API flows described later.
     The token name, scopes, and desired expiration are provided as parameters.
 
 ``GET /auth/api/v1/users/{username}/tokens/{key}``
     Return the information for a specific token.
-    Only administrators may specify a username other than their own.
     Example:
 
     .. code-block:: json
@@ -494,26 +470,24 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
 ``PATCH /auth/api/v1/users/{username}/tokens/{key}``
     Update data for a token.
-    Only administrators may specify a username other than their own.
     Only the ``token_name``, ``scopes``, and ``expires`` properties can be changed.
 
 ``DELETE /auth/api/v1/users/{username}/tokens/{key}``
     Revoke a token.
-    Only administrators may specify a username other than their own.
     This also recursively revokes all child tokens of that token.
 
 ``GET /auth/api/v1/users/{username}/token-auth-history``
     Get a history of authentication events for the given user.
-    Only administrators may specify a username other than their own.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
-    - ``offset``: Skip the first N elements
-    - ``limit``: Return only N elements
+    - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
     - ``key``: Limit to authentications involving the given key (including child tokens of that key)
     - ``token_type``: Limit to authentications with the given token type
     - ``ip_address``: Limit to events from the given IP address or `CIDR block`_
+
+    Pagination is done via an optional ``cursor`` parameter.
 
     Example:
 
@@ -552,13 +526,14 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     Only administrators may specify a username other than their own.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
-    - ``offset``: Skip the first N elements
-    - ``limit``: Return only N elements
+    - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
     - ``key``: Limit to events involving the given key (including child tokens of that key)
     - ``token_type``: Limit to events with the given token type
     - ``ip_address``: Limit to events from the given IP address or CIDR block
+
+    Pagination is done via an optional ``cursor`` parameter.
 
     Example:
 
@@ -634,9 +609,47 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
          ]
        }
 
+Administrator routes
+--------------------
+
+The following APIs may only be used by administrators.
+
+``GET /auth/api/v1/tokens``
+    Return all extant tokens.
+    Example:
+
+    .. code-block:: json
+
+       [
+         {
+           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "username": "alice",
+           "token_type": "session",
+           "created": 1600723604,
+           "last_used": 1600723604,
+           "expires": 1600810004,
+         },
+         {
+           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
+           "username": "alice",
+           "token_type": "notebook",
+           "created": 1600723606,
+           "expires": 1600810004,
+           "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
+         },
+         {
+           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "username": "alice",
+           "token_name": "personal laptop",
+           "token_type": "user",
+           "scopes": ["user:read", "user:write"],
+           "created": 1600723681,
+           "last_used": 1600723682
+         }
+       ]
+
 ``GET /auth/api/v1/admins``
     Get the list of current administrators.
-    This API is limited to administrators.
     Example:
 
     .. code-block:: json
@@ -649,16 +662,13 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
 ``POST /auth/api/v1/admins``
     Add a new administrator.
-    This API is limited to administrators.
 
 ``DELETE /auth/api/v1/admins/{username}``
     Remove an administrator.
-    This API is limited to administrators.
     The last administrator cannot be removed.
 
 ``GET /auth/api/v1/history/admins``
     Get a history of changes to the list of administrators.
-    This API is limited to administrators.
     Example:
 
     .. code-block:: json
@@ -675,17 +685,17 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
 
 ``GET /auth/api/v1/history/token-auth``
     Get a history of token authentications.
-    This API is limited to administrators.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
-    - ``offset``: Skip the first N elements
-    - ``limit``: Return only N elements
+    - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
     - ``username``: Limit to events for the given username
     - ``key``: Limit to events involving the given key (including child tokens of that key)
     - ``token_type``: Limit to events with the given token type
     - ``ip_address``: Limit to events from the given IP address or CIDR block
+
+    Pagination is done via an optional ``cursor`` parameter.
 
     The output is the same as ``/auth/api/v1/users/{username}/token-auth-history`` except that the ``username`` field is included in each returned record.
 
@@ -694,14 +704,15 @@ In a production deployment, they would be fully-qualified ``https`` URLs that in
     This API is limited to administrators.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
-    - ``offset``: Skip the first N elements
-    - ``limit``: Return only N elements
+    - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
     - ``username``: Limit to events for the given username
     - ``key``: Limit to events involving the given key (including child tokens of that key)
     - ``token_type``: Limit to events with the given token type
     - ``ip_address``: Limit to events from the given IP address or CIDR block
+
+    Pagination is done via an optional ``cursor`` parameter.
 
     The output is the same as ``/auth/api/v1/users/{username}/token-change-history`` except that the ``username`` field is included in each returned record.
 
@@ -867,6 +878,9 @@ Blog posts
 
 Standards
 ---------
+
+`FastAPI`_
+    The documentation for the FastAPI Python framework.
 
 `JSON:API`_
     The (at the time of this writing) release candidate for the upcoming JSON:API 1.1 specification.
