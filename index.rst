@@ -181,8 +181,9 @@ It doubles as the web session history table, since web sessions are another type
        ip_address INET,
        event_time TIMESTAMP         NOT NULL
    );
-   CREATE INDEX token_auth_history_by_token (token, event_time);
-   CREATE INDEX token_auth_history_by_username (username, event_time);
+   CREATE INDEX token_auth_history_by_time (event_time, id);
+   CREATE INDEX token_auth_history_by_token (token, event_time, id);
+   CREATE INDEX token_auth_history_by_username (username, event_time, id);
 
 This table stores data even for tokens that have been deleted, so it duplicates some information from the ``token`` table rather than adding a foreign key.
 The ``service`` column has the same meaning as in the ``token`` table.
@@ -212,8 +213,9 @@ Changes to tokens are stored in a separate history table.
        ip_address     INET,
        event_time     TIMESTAMP         NOT NULL
    )
-   CREATE INDEX token_change_history_by_token (token, event_time);
-   CREATE INDEX token_change_history_by_username (username, event_time);
+   CREATE INDEX token_change_history_by_time (event_time, id);
+   CREATE INDEX token_change_history_by_token (token, event_time, id);
+   CREATE INDEX token_change_history_by_username (username, event_time, id);
 
 The ``actor`` column, if not ``NULL``, indicates that someone other than the user represented by the token took the recorded action.
 It identifies the admin who took that action.
@@ -247,7 +249,7 @@ and changes to that table are stored in a history table:
        ip_address INET              NOT NULL,
        event_time TIMESTAMP         NOT NULL
    );
-   CREATE INDEX admin_history_by_event_time ON admin_history (event_time);
+   CREATE INDEX admin_history_by_time ON admin_history (event_time, id);
 
 Redis
 -----
@@ -375,14 +377,25 @@ That administrator can then use the API or web interface to add additional admin
 API
 ===
 
+This design follows the recommendations in `Best Practices for Designing a Pragmatic RESTful API`_.
+This means, among other implications:
+
+- Identifiers are used instead of URLs
+- The API does not follow HATEOAS_ principles
+- The API does not attempt to be self-documenting (see the OpenAPI-generated documentation instead)
+- Successful JSON return values are not wrapped in metadata
+- ``Link`` headers are used for pagination
+
+.. _HATEOAS: https://en.wikipedia.org/wiki/HATEOAS
+
+See that blog post for more reasoning and justification.
+See :ref:`References <references>` for more research links.
+
 All URLs for the REST API for token manipulation start with ``/auth/api/v1``.
 The API will be implemented using FastAPI_.
 
 This is a sketch of the critical pieces of the API rather than a complete specification.
-The full OpenAPI specification of the token API will be maintained as part of the implementation.
-
-In the examples below, the URLs are given as relative URLs.
-In a production deployment, they would be fully-qualified ``https`` URLs that include the deployment hostname.
+The full OpenAPI specification of the token API will be maintained as part of the implementation and will replace the routes sections of this document.
 
 The API is divided into two parts: routes that may be used by an individual user to manage and view their own tokens, and routes that may only be used by an administrator.
 The first routes can also be used by an administrator and, unlike an individual user, an administrator can specify a username other than their own.
@@ -393,6 +406,71 @@ Users may only use the routes under the ``users`` collection with their own user
 The routes under ``/tokens`` and ``/history`` allow searching for any username or seeing results across all usernames and are limited to administrators.
 This could have instead been enforced in more granular authorization checks on the more general routes, but this approach seemed simpler and easier to understand.
 It also groups all of a user's data under ``/users/{username}`` and is potentially extensible to other APIs later.
+
+Errors
+------
+
+HTTP status codes are used to communicate success or failure.
+All errors will result in a 4xx or 5xx status code.
+
+All 4xx HTTP errors for which a body is reasonable return a JSON error body.
+To minimize the amount of code required on top of FastAPI_, these errors use the same conventions as the internally-generated FastAPI errors, namely:
+
+.. code-block:: json
+
+   {
+     "detail": [
+       {
+         "loc": [
+           "query",
+           "needy"
+         ],
+         "msg": "field required",
+         "type": "value_error.missing"
+      }
+    ]
+  }
+
+In other words, errors will be a JSON object with a ``details`` key, which contains a list of errors.
+Each error will have at least ``msg`` and ``type`` keys.
+``msg`` will provide a human-readable error message.
+``type`` will provide a unique identifier for the error.
+
+.. _pagination:
+
+Pagination
+----------
+
+Users are expected to have a sufficiently small number of tokens to not require pagination.
+The admin query for all tokens in the system may be longer, but in the first implementation these also won't be paginated.
+We will add pagination later if it becomes necessary.
+
+However, queries for history will require pagination.
+
+To avoid the known problems with offset/limit pagination, such as missed entries when moving between pages, pagination for all APIs that require it will be done via cursors.
+For the history tables, there is a unique ID for each row and a timestamp.
+The unique ID will normally increase with the timestamp, but may not (due to out-of-order ingestion).
+Entries are always returned sorted by timestamp.
+
+Therefore, we can use keyset pagination (the third option in `Five ways to paginate in Postgres`_) with a slight modification.
+When returning the first page, the results will be sorted by timestamp and then unique ID and a cursor for the next page will be included.
+That cursor will be the unique ID for the last record, an underscore, and the timestamp for that record (in seconds since epoch).
+If the client requests the next page, the server will then request entries older than or equal to that timestamp, sorted by timestamp and then by unique ID, and excluding entries with a matching timestamp and unique IDs smaller than or equal to the one in the cursor.
+This will return the next batch of results without a danger of missing any.
+
+The cursor may also begin with the letter ``p`` for links to the previous page.
+In this case, the relations in the SQL query are reversed (newer than or equal to the timestamp, unique IDs greater than or equal to the one in the cursor).
+
+The pagination links use the ``Link`` (see `RFC-8288`_) header to move around in the results, and an ``X-Total-Count`` custom header with the total number of results.
+
+Example headers for a paginated result::
+
+    Link: <https://example.org/auth/api/v1/history/token-auth?limit=100&cursor=345_1601415205>; rel="next"
+    X-Total-Count: 547
+
+Links of type ``next``, ``prev``, ``first``, and ``last`` will be included.
+
+If the tokens route eventually needs pagination, we can use a similar approach of a cursor based on the sort keys for the result set.
 
 User routes
 -----------
@@ -420,22 +498,22 @@ For all routes listed below with a ``username`` path parameter, only administrat
 
        [
          {
-           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
            "created": 1600723604,
            "last_used": 1600723604,
            "expires": 1600810004,
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
+           "token": "e4uA07XmH5nwkfkPQ1RQFQ",
            "username": "alice",
            "token_type": "notebook",
            "created": 1600723606,
            "expires": 1600810004,
-           "parent": "/auth/api/v1/tokens/DpBVCadJpTC-uB7NH2TYiQ"
+           "parent": "DpBVCadJpTC-uB7NH2TYiQ"
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token": "N7PClcZ9zzF5xV-KR7vH3w",
            "username": "alice",
            "token_name": "personal laptop",
            "token_type": "user",
@@ -458,7 +536,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
     .. code-block:: json
 
        {
-         "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+         "token": "N7PClcZ9zzF5xV-KR7vH3w",
          "username": "alice",
          "token_name": "personal laptop",
          "token_type": "user",
@@ -480,6 +558,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
     Get a history of authentication events for the given user.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
+    - ``cursor``: Used for :ref:`pagination <pagination>`.
     - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
@@ -495,19 +574,19 @@ For all routes listed below with a ``username`` path parameter, only administrat
 
        [
          {
-           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
            "ip_address": "192.88.99.2",
            "timestamp": 1600725470
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
-           "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "e4uA07XmH5nwkfkPQ1RQFQ",
+           "parent": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "notebook",
            "timestamp": 1600725676
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token": "N7PClcZ9zzF5xV-KR7vH3w",
            "token_name": "personal laptop",
            "token_type": "user",
            "scopes": ["user:read", "user:write"],
@@ -526,6 +605,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
     Only administrators may specify a username other than their own.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
+    - ``cursor``: Used for :ref:`pagination <pagination>`.
     - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
@@ -541,21 +621,21 @@ For all routes listed below with a ``username`` path parameter, only administrat
 
        [
          {
-           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
            "action": "create",
            "ip_address": "192.88.99.2",
            "timestamp": 1600725470
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
            "action": "revoke",
            "ip_address": "192.88.99.5",
            "timestamp": 1600725470
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token": "N7PClcZ9zzF5xV-KR7vH3w",
            "token_name": "personal laptop",
            "token_type": "user",
            "scopes": ["user:read", "user:write"],
@@ -575,14 +655,14 @@ For all routes listed below with a ``username`` path parameter, only administrat
     .. code-block:: json
 
        {
-         "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+         "token": "N7PClcZ9zzF5xV-KR7vH3w",
          "username": "alice",
          "token_name": "personal laptop",
          "token_type": "user",
          "scopes": ["user:read", "user:write"],
          "created": 1600723681,
          "expires": 1600727294,
-         "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
+         "parent": "DpBVCadJpTC-uB7NH2TYiQ"
        }
 
 ``GET /auth/api/v1/user-info``
@@ -622,7 +702,7 @@ The following APIs may only be used by administrators.
 
        [
          {
-           "token": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ",
+           "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "username": "alice",
            "token_type": "session",
            "created": 1600723604,
@@ -630,15 +710,15 @@ The following APIs may only be used by administrators.
            "expires": 1600810004,
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/e4uA07XmH5nwkfkPQ1RQFQ",
+           "token": "e4uA07XmH5nwkfkPQ1RQFQ",
            "username": "alice",
            "token_type": "notebook",
            "created": 1600723606,
            "expires": 1600810004,
-           "parent": "/auth/api/v1/users/alice/tokens/DpBVCadJpTC-uB7NH2TYiQ"
+           "parent": "DpBVCadJpTC-uB7NH2TYiQ"
          },
          {
-           "token": "/auth/api/v1/users/alice/tokens/N7PClcZ9zzF5xV-KR7vH3w",
+           "token": "N7PClcZ9zzF5xV-KR7vH3w",
            "username": "alice",
            "token_name": "personal laptop",
            "token_type": "user",
@@ -669,6 +749,13 @@ The following APIs may only be used by administrators.
 
 ``GET /auth/api/v1/history/admins``
     Get a history of changes to the list of administrators.
+    The range of events can be controlled by pagination and search parameters included in the URL:
+
+    - ``cursor``: Used for :ref:`pagination <pagination>`.
+    - ``limit``: Maximum number of events to return
+    - ``since``: Return only events after this timestamp
+    - ``until``: Return only events until this timestamp
+
     Example:
 
     .. code-block:: json
@@ -687,6 +774,7 @@ The following APIs may only be used by administrators.
     Get a history of token authentications.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
+    - ``cursor``: Used for :ref:`pagination <pagination>`.
     - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
@@ -704,6 +792,7 @@ The following APIs may only be used by administrators.
     This API is limited to administrators.
     The range of events can be controlled by pagination and search parameters included in the URL:
 
+    - ``cursor``: Used for :ref:`pagination <pagination>`.
     - ``limit``: Maximum number of events to return
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
@@ -845,11 +934,26 @@ Internal tokens
 
 When an internal token is requested via the ``delegate_to`` parameter, the ``auth_request`` handler will find a child token of the current token with the appropriate ``service`` and ``scope`` values.
 If one does not exist, a new child token with appropriate values will be created.
-This child token inherits its expiration and other values (such as the temporarily-stored user metadata) from the parent token.
+The child token inherits its values (such as the temporarily-stored user metadata) from the parent token, except for its expiration (see below).
 The parent token may be of any type, including another internal token, creating chains of delegated tokens.
 
+If the parent token has an expiration, the child token inherits its expiration from the parent token.
+If the parent token does not expire, the child token should still have an expiration to reduce its power.
+That expiration is configurable (globally) and will start at two days.
+We will adjust that configuration if this isn't long enough for long-running API calls or batch processing.
+
+Before creating a new child token for a given ``delegate_to`` request, the token system will check whether a child token of the given parent token already exists with appropriate ``service`` and ``scope``.
+If so, that existing token will be used instead of issuing a new one provided that either its expiration matches that of the parent token or, for parent tokens that don't expire, its expiration is not more than half exhausted.
+In other words, an internal token created from a non-expiring parent token with the starting two day lifespan will be reused for a day, after which a new one will be created.
+
 To avoid the latency of database queries in the common case of multiple requests with the same token to a service requesting the same ``service`` and ``scope`` values for an internal token, the ``auth_request`` handler may internally cache a mapping of parent token to child tokens for given ``service`` and ``scope`` values.
-As long as the referenced child token is still valid according to Redis, this mapping may be cached for up to the expiration time of the child token.
+As long as the referenced child token is still valid according to Redis, this mapping may be cached for up to the expiration time of the parent token or halfway to the expiration time of the child token, whichever is shorter.
+After that point, a new child token for that ``service`` and ``scope`` pair will be created.
+
+This cache will be stored in memory for each worker and lost if that worker is restarted.
+Reconstructing the cache is relatively inexpensive (just a few SQL queries for the first time a worker sees that parent token, ``service``, and ``scope`` tuple).
+
+.. _references:
 
 References
 ==========
