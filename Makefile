@@ -31,12 +31,15 @@ help:
 clean:
 	rm -rf $(BUILDDIR)/*
 
-html:
+_static/architecture.png: _static/architecture.py
+	python _static/architecture.py
+
+html: _static/architecture.png
 	$(SPHINXBUILD) -b html $(ALLSPHINXOPTS) $(BUILDDIR)/html
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/html."
 
-epub:
+epub: _static/architecture.png
 	$(SPHINXBUILD) -b epub $(ALLSPHINXOPTS) $(BUILDDIR)/epub
 	@echo
 	@echo "Build finished. The epub file is in $(BUILDDIR)/epub."
