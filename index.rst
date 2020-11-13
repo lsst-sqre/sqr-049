@@ -137,7 +137,7 @@ An index of current extant tokens is stored via the following schema:
        expires    TIMESTAMP,
        UNIQUE(username, token_name)
    );
-   CREATE INDEX token_by_username ON token (username, token_type);
+   CREATE INDEX token_by_username ON token (username, token_type, service);
 
 The ``scopes`` column, if present, is a sorted, comma-separated list of scopes.
 (This representation makes it easier to find an existing subtoken with a desired scope than a normalized table.)
@@ -202,7 +202,7 @@ Changes to tokens are stored in a separate history table.
        token_type     token_type_enum   NOT NULL,
        token_name     VARCHAR(64),
        parent         VARCHAR(64),
-       scopes         VARCHAR(256)      NOT NULL,
+       scopes         VARCHAR(256),
        service        VARCHAR(64),
        expires        TIMESTAMP,
        actor          VARCHAR(64),
@@ -528,6 +528,13 @@ For all routes listed below with a ``username`` path parameter, only administrat
     Only user tokens may be created this way.
     Tokens of other types are created through non-API flows described later.
     The token name, scopes, and desired expiration are provided as parameters.
+    The newly-created token is returned as follows:
+
+    .. code-block:: json
+
+       {
+         "token": "gt-qVGZIh65TAJlNprOaMDhwg.WlUA5zyAY16dDRvDYxnwhg"
+       }
 
 ``GET /auth/api/v1/users/{username}/tokens/{key}``
     Return the information for a specific token.
@@ -661,6 +668,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
          "token_type": "user",
          "scopes": ["user:read", "user:write"],
          "created": 1600723681,
+         "last_used": 1600727280,
          "expires": 1600727294,
          "parent": "DpBVCadJpTC-uB7NH2TYiQ"
        }
