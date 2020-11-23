@@ -26,6 +26,10 @@ This specification will be implemented in Gafaelfawr_, the authentication and au
 
 .. _Gafaelfawr: https://gafaelfawr.lsst.io/
 
+This specification includes tracking of members of a token admin group.
+This is a temporary stopgap until the group component described in SQR-044_ is available.
+It is therefore the simplest mechanism that can work, rather than implementing something more complete and functional.
+
 User metadata
 -------------
 
@@ -93,8 +97,8 @@ Kafka is used to record authentication events and off-load updates of the releva
 Token format
 ------------
 
-A token is of the form ``gsh-<key>.<secret>``.
-The ``gsh-`` part is a fixed prefix to make it easy to identify tokens.
+A token is of the form ``gt-<key>.<secret>``.
+The ``gt-`` part is a fixed prefix to make it easy to identify tokens.
 The ``<key>`` is the Redis key under which data about the token is stored.
 The ``<secret>`` is an opaque value used to prove that the holder of the token is allowed to use it.
 Wherever the token is named, such as in UIs, only the ``<key>`` component is given, omitting the secret.
@@ -151,10 +155,9 @@ That relationship is captured by the following schema:
 .. code-block:: sql
 
    CREATE TABLE subtoken (
-       PRIMARY KEY (id),
-       id     SERIAL      NOT NULL,
-       parent VARCHAR(64)          REFERENCES token ON DELETE SET NULL,
+       PRIMARY KEY (child),
        child  VARCHAR(64) NOT NULL REFERENCES token ON DELETE CASCADE
+       parent VARCHAR(64)          REFERENCES token ON DELETE SET NULL,
    );
    CREATE INDEX subtoken_by_parent ON subtoken (parent);
 
@@ -371,6 +374,16 @@ Bootstrapping
 A command-line utility will bootstrap a new installation of the token management system by creating the necessary database schema.
 To bootstrap administrative access, this step will take the username of the first administrator as an argument and initialize the ``admin`` table with that one member.
 That administrator can then use the API or web interface to add additional administrators.
+
+IP addresses
+------------
+
+This storage model stores IP addresses for each action in a history table.
+IP addresses are personally identifiable information and may be somewhat sensitive, but are also extremely useful in debugging problems and identifying suspicious behavior.
+
+This proposal currently does not redact IP addresses, choosing their utility for operational and security purposes over minimizing the data stored.
+However, this is not a final policy, just an initial design.
+This will be revisited later.
 
 .. _api:
 
@@ -701,6 +714,7 @@ Administrator routes
 --------------------
 
 The following APIs may only be used by administrators.
+The ``/auth/api/v1/admins`` API is a temporary stopgap until the group system specified in SQR-044_ is available.
 
 ``GET /auth/api/v1/tokens``
     Return all extant tokens.
@@ -754,6 +768,8 @@ The following APIs may only be used by administrators.
 ``DELETE /auth/api/v1/admins/{username}``
     Remove an administrator.
     The last administrator cannot be removed.
+    Note that administrator usernames are not verified, and therefore it is possible to add a bogus username and then remove the last working admin.
+    This is not addressed because this API is a temporary stopgap.
 
 ``GET /auth/api/v1/history/admins``
     Get a history of changes to the list of administrators.
