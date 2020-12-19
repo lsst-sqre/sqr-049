@@ -495,7 +495,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
     No data is sent with the request.
     The reply includes the CSRF value to use for all subsequent requests.
     See :ref:`API security <api-security>` for more information.
-    It also returns the authenticated username to assist in forming subsequent queries.
+    It also returns the authenticated username, current scopes, and the configured scopes with their descriptions to assist in forming subsequent queries and to provide information to the UI.
     Example:
 
     .. code-block:: json
@@ -503,6 +503,19 @@ For all routes listed below with a ``username`` path parameter, only administrat
        {
          "csrf": "d56de7d8c6d90cc4a279666156c5923f",
          "username": "alice"
+         "scopes": ["read:all"],
+         "config": {
+           "scopes": [
+             {
+               "name": "admin",
+               "description": "Full admin access"
+             },
+             {
+               "name": "read:all",
+               "description": "Read all data"
+             }
+           ]
+         }
        }
 
 ``GET /auth/api/v1/users/{username}/tokens``
