@@ -53,8 +53,8 @@ Overview
 
    Token management architecture
 
-Expected flow
--------------
+User flow
+---------
 
 Here are some typical user token authentication flows.
 
@@ -81,6 +81,21 @@ Here are some typical user token authentication flows.
 * User makes an API call with their user token that requires making subrequests to other services.
   This proceeds as with web UIs and notebook API calls.
 
+Service flow
+------------
+
+Here are some typical authentication flows for service tokens, used for requests by a service that have no prompting request from a user.
+
+* Administrator authenticates with a bootstrap admin token and creates a service token with the ``admin:token`` scope.
+  That service token is then stored as a secret for an application that needs administrative capabilities.
+* Application uses a service token with ``admin:token`` scope to create a new ``user`` token for an arbitrary user.
+  The application can then use that token to authenticate as a user to other services.
+  This flow might be used by a load-testing or monitoring application, for example.
+* Administrator uses the bootstrap admin took to create a service token with some normal, non-admin scope.
+  Administrator them stores that service token as a secret for another application.
+  The application can then use that token to make API calls to other serivces that require that scope.
+  Child notebook and internal tokens are created as subtokens of that token as required.
+
 Storage
 =======
 
@@ -105,6 +120,18 @@ Wherever the token is named, such as in UIs, only the ``<key>`` component is giv
 When the token is presented for authentication, the secret provided is checked against the stored secret for that key.
 Checking the secret prevents someone who can list the keys in the Redis session store from using those keys as session handles.
 
+Scopes
+------
+
+Each token is associated with zero or more scopes.
+These scopes are used to control access to services.
+Subtokens are normally created with the same scope as their parent token, and user tokens are normally craeted with the same scope as the token used to authenticate to the token creation API.
+However, the scope of such tokens can be limited at creation time.
+The mechanism to do so is described under :ref:`API <api>` and the :ref:`auth request handler <auth_request>`.
+
+Scopes beginning with ``admin:`` are reserved for the authentication and authorization component of the Science Platform.
+The scope ``admin::token`` is used to control access to the :ref:`token admin API <api-admin>`.
+
 Database
 --------
 
@@ -118,6 +145,11 @@ Those tokens may be of the following types:
 - **notebook**: Automatically generated token for notebook use
 - **internal**: Internal token used for service-to-service authentication
 
+In addition, services may have tokens unconnected from any user.
+These tokens have the following type:
+
+- **service**: Long-lived token used for service-to-service authentication
+
 An index of current extant tokens is stored via the following schema:
 
 .. code-block:: sql
@@ -126,7 +158,8 @@ An index of current extant tokens is stored via the following schema:
        'session',
        'user',
        'notebook',
-       'internal'
+       'internal',
+       'service'
    );
    CREATE TABLE token (
        PRIMARY KEY (token),
@@ -148,6 +181,9 @@ The ``scopes`` column, if present, is a sorted, comma-separated list of scopes.
 If a token has a ``scopes`` of ``NULL``, it can be used for any purpose (although some actions are restricted to session tokens).
 The ``service`` column is only used by internal tokens.
 It stores an identifier for the service to which the token was issued and which is acting on behalf of a user.
+(Tokens of type service put the name of the service in the ``username`` field.)
+
+The username ``<bootstrap>`` is reserved and may not be used.
 
 Internal tokens are derived from other tokens.
 That relationship is captured by the following schema:
@@ -192,6 +228,8 @@ This table stores data even for tokens that have been deleted, so it duplicates 
 The ``service`` column has the same meaning as in the ``token`` table.
 The ``scopes`` column holds a comma-separated list of scopes.
 
+Authentications by the bootstrap token are logged with a username of ``<bootstrap>``.
+
 Changes to tokens are stored in a separate history table.
 
 .. code-block:: sql
@@ -208,7 +246,7 @@ Changes to tokens are stored in a separate history table.
        scopes         VARCHAR(256),
        service        VARCHAR(64),
        expires        TIMESTAMP,
-       actor          VARCHAR(64),
+       actor          VARCHAR(64)       NOT NULL,
        action         token_action_enum NOT NULL,
        old_token_name VARCHAR(64),
        old_scopes     VARCHAR(256),
@@ -220,8 +258,9 @@ Changes to tokens are stored in a separate history table.
    CREATE INDEX token_change_history_by_token (token, event_time, id);
    CREATE INDEX token_change_history_by_username (username, event_time, id);
 
-The ``actor`` column, if not ``NULL``, indicates that someone other than the user represented by the token took the recorded action.
-It identifies the admin who took that action.
+The ``actor`` column contains the username of the token used to authenticate the recorded action.
+If the action was authenticated by the bootstrap token, it will be set to ``<bootstrap>``.
+
 The ``token_name``, ``scopes``, and ``expires`` fields hold the values for that token at the completion of the recorded action.
 In other words, if the action is ``edit``, they hold the values after the completion of the edit.
 The columns ``old_token_name``, ``old_scopes``, and ``old_expires`` hold the previous values or ``NULL`` if that value wasn't changed.
@@ -257,7 +296,7 @@ and changes to that table are stored in a history table:
 Redis
 -----
 
-Redis stores a key for each token.
+Redis stores a key for each token except for the bootstrap token.
 The Redis key is ``token:<key>`` where ``<key>`` is the key portion of the token, corresponding to the primary key of the ``token`` table.
 The value is an encrypted JSON document with the following keys:
 
@@ -271,6 +310,8 @@ The value is an encrypted JSON document with the following keys:
 
 In addition, the following keys store user metadata taken from the OpenID Connect or OAuth 2.0 id token.
 These fields are temporary and will be dropped once the user management component is complete.
+All of these fields are optional; tokens of type service may not have any of them.
+However, some services may reject authentications that don't have an associated ``uid`` value.
 
 - **name**: The user's preferred full name
 - **uid**: The user's unique numeric UID
@@ -313,7 +354,7 @@ The following Avro schema is used for authentication events:
        {
          "name": "type",
          "type": "enum",
-         "symbols": ["session", "user", "notebook", "internal"],
+         "symbols": ["session", "user", "notebook", "internal", "service"],
          "doc": "Type of the token"
        },
        {
@@ -375,6 +416,9 @@ A command-line utility will bootstrap a new installation of the token management
 To bootstrap administrative access, this step will take the username of the first administrator as an argument and initialize the ``admin`` table with that one member.
 That administrator can then use the API or web interface to add additional administrators.
 
+The configuration of the token management system may also include a bootstrap token.
+This token will have unlimited access to the API routes ``/auth/api/v1/admins`` and ``/auth/api/v1/tokens`` and thus can configure the administrators and create service and user tokens with any scope and any identity.
+
 IP addresses
 ------------
 
@@ -411,12 +455,14 @@ This is a sketch of the critical pieces of the API rather than a complete specif
 The full OpenAPI specification of the token API will be maintained as part of the implementation and will replace the routes sections of this document.
 
 The API is divided into two parts: routes that may be used by an individual user to manage and view their own tokens, and routes that may only be used by an administrator.
+Administrators are defined as users with authentication tokens that have the ``admin:token`` scope.
 The first routes can also be used by an administrator and, unlike an individual user, an administrator can specify a username other than their own.
 
 There is some minor duplication in routes (``/auth/api/v1/tokens`` versus ``/auth/api/v1/users/{username}/tokens`` and similarly for token authentication and change history).
 This was done to simplify the security model.
 Users may only use the routes under the ``users`` collection with their own username.
-The routes under ``/tokens`` and ``/history`` allow searching for any username or seeing results across all usernames and are limited to administrators.
+The routes under ``/tokens`` and ``/history`` allow searching for any username, creating tokens for any user, and seeing results across all usernames.
+They are limited to administrators.
 This could have instead been enforced in more granular authorization checks on the more general routes, but this approach seemed simpler and easier to understand.
 It also groups all of a user's data under ``/users/{username}`` and is potentially extensible to other APIs later.
 
@@ -488,7 +534,7 @@ If the tokens route eventually needs pagination, we can use a similar approach o
 User routes
 -----------
 
-For all routes listed below with a ``username`` path parameter, only administrators may specify a username other than their own.
+For all routes listed below with a ``username`` path parameter, only tokens with ``admin:token`` scope may specify a username other than their own.
 
 ``POST /auth/api/v1/login``
     Used only by the web frontend.
@@ -556,6 +602,20 @@ For all routes listed below with a ``username`` path parameter, only administrat
     Only user tokens may be created this way.
     Tokens of other types are created through non-API flows described later.
     The token name, scopes, and desired expiration are provided as parameters.
+    Example request:
+
+    .. code-block:: json
+
+       {
+         "token_name": "personal laptop",
+         "scopes": ["user:read", "user:write"],
+         "expires": 1600727294
+       }
+
+    ``expires`` may be ``null`` or omitted to set the token to never expire.
+    ``scopes`` may be omitted to include no scopes in the generated token.
+    Otherwise, the provided scopes must be a subset of the scopes of the token used to authenticate this API call.
+
     The newly-created token is returned as follows:
 
     .. code-block:: json
@@ -584,6 +644,19 @@ For all routes listed below with a ``username`` path parameter, only administrat
 ``PATCH /auth/api/v1/users/{username}/tokens/{key}``
     Update data for a token.
     Only the ``token_name``, ``scopes``, and ``expires`` properties can be changed.
+    Example request:
+
+    .. code-block:: json
+
+       {
+         "token_name": "new token name",
+         "scopes": ["user:read"],
+         "expires": null
+       }
+
+    Properties that should not be changed may be omitted.
+    The requested scopes must be a subset of the scopes of the token used to authenticate this API call.
+    ``expires`` may be ``null`` to set the token to never expire.
 
 ``DELETE /auth/api/v1/users/{username}/tokens/{key}``
     Revoke a token.
@@ -658,6 +731,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
          {
            "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
+           "actor": "alice",
            "action": "create",
            "ip_address": "192.88.99.2",
            "timestamp": 1600725470
@@ -665,6 +739,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
          {
            "token": "DpBVCadJpTC-uB7NH2TYiQ",
            "token_type": "session",
+           "actor": "alice",
            "action": "revoke",
            "ip_address": "192.88.99.5",
            "timestamp": 1600725470
@@ -685,6 +760,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
 ``GET /auth/api/v1/token-info``
     Return information about the provided authentication token.
     (The last used time is nonsensical for this API and is therefore omitted.)
+    This route cannot be used with the bootstrap token.
     Example:
 
     .. code-block:: json
@@ -703,6 +779,7 @@ For all routes listed below with a ``username`` path parameter, only administrat
 
 ``GET /auth/api/v1/user-info``
     Returns user metadata for the user authenticated by the provided token.
+    This route cannot be used with the bootstrap token.
     This is a temporary API until the user management service is available.
     It returns information from the upstream OAuth 2.0 or OpenID Connect provider that was cached in the token session.
     Example:
@@ -725,14 +802,18 @@ For all routes listed below with a ``username`` path parameter, only administrat
          ]
        }
 
+    All fields other than ``username`` are optional.
+
+.. _api-admin:
+
 Administrator routes
 --------------------
 
-The following APIs may only be used by administrators.
+The following APIs may only be used by tokens with the ``admin:token`` scope.
 The ``/auth/api/v1/admins`` API is a temporary stopgap until the group system specified in SQR-044_ is available.
 
 ``GET /auth/api/v1/tokens``
-    Return all extant tokens.
+    Return information about all extant tokens.
     Example:
 
     .. code-block:: json
@@ -765,8 +846,36 @@ The ``/auth/api/v1/admins`` API is a temporary stopgap until the group system sp
          }
        ]
 
+``POST /auth/api/v1/tokens``
+    Create a new token for the given user.
+    The bootstrap token may be used to authenticate to this route.
+    Only user and service tokens may be created this way.
+    Tokens of other types are created through non-API flows described later.
+    The username, token type, token name (for a user token), scopes, and desired expiration are provided as parameters.
+    Example request:
+
+    .. code-block:: json
+
+       {
+         "username": "mobu",
+         "token_type": "service",
+         "scopes": ["admin:token"],
+         "expires": null
+       }
+
+    ``expires`` may be ``null`` or omitted to set the token to never expire.
+
+    The newly-created token is returned as follows:
+
+    .. code-block:: json
+
+       {
+         "token": "gt-qVGZIh65TAJlNprOaMDhwg.WlUA5zyAY16dDRvDYxnwhg"
+       }
+
 ``GET /auth/api/v1/admins``
     Get the list of current administrators.
+    The bootstrap token may be used to authenticate to this route.
     Example:
 
     .. code-block:: json
@@ -779,9 +888,11 @@ The ``/auth/api/v1/admins`` API is a temporary stopgap until the group system sp
 
 ``POST /auth/api/v1/admins``
     Add a new administrator.
+    The bootstrap token may be used to authenticate to this route.
 
 ``DELETE /auth/api/v1/admins/{username}``
     Remove an administrator.
+    The bootstrap token may be used to authenticate to this route.
     The last administrator cannot be removed.
     Note that administrator usernames are not verified, and therefore it is possible to add a bogus username and then remove the last working admin.
     This is not addressed because this API is a temporary stopgap.
@@ -836,6 +947,7 @@ The ``/auth/api/v1/admins`` API is a temporary stopgap until the group system sp
     - ``since``: Return only events after this timestamp
     - ``until``: Return only events until this timestamp
     - ``username``: Limit to events for the given username
+    - ``actor``: Limit to events with the given actor
     - ``key``: Limit to events involving the given key (including child tokens of that key)
     - ``token_type``: Limit to events with the given token type
     - ``ip_address``: Limit to events from the given IP address or CIDR block
@@ -926,6 +1038,11 @@ Admin token list
     Lists (with pagination) all of the current-valid tokens known to the system.
     Allows restricting the view by token types and users.
 
+Admin token creation
+    Creates a new token for any user, with a type of either ``user`` or ``service``.
+    This is how new service tokens are created through the UI.
+    It also allows admins to create user tokens to impersonate any user.
+
 Admin token view
     Shows the details of any single token, including its authentication history.
     The token can be revoked from this page.
@@ -947,6 +1064,8 @@ That and all other API requests will be authenticated via session cookie, which 
 
 Details on how that session cookie is created are out of scope for this design.
 See the Gafaelfawr_ documentation for more information.
+
+.. _auth_request:
 
 ``auth_request`` API
 ====================
