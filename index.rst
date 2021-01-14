@@ -120,6 +120,15 @@ Wherever the token is named, such as in UIs, only the ``<key>`` component is giv
 When the token is presented for authentication, the secret provided is checked against the stored secret for that key.
 Checking the secret prevents someone who can list the keys in the Redis session store from using those keys as session handles.
 
+Usernames
+---------
+
+Usernames, from whatever source, must consist only of lowercase letters, period (``.``), dash (``-``), and underscore (``_``).
+Usernames from GitHub, which is case-insensitive, will be mapped to lowercase during authentication and will appear in the token system only in lowercase form.
+
+The one exception is the bootstrap token (see :ref:`boostrapping <bootstrap>`), which does not exist as a regular token in any of the data stores but which can appear as an actor in change logs.
+That token has a username of ``<bootstrap>``, which would otherwise be invalid.
+
 Scopes
 ------
 
@@ -182,8 +191,6 @@ If a token has a ``scopes`` of ``NULL``, it can be used for any purpose (althoug
 The ``service`` column is only used by internal tokens.
 It stores an identifier for the service to which the token was issued and which is acting on behalf of a user.
 (Tokens of type service put the name of the service in the ``username`` field.)
-
-The username ``<bootstrap>`` is reserved and may not be used.
 
 Internal tokens are derived from other tokens.
 That relationship is captured by the following schema:
@@ -409,6 +416,8 @@ Housekeeping will also periodically delete all rows in the history tables older 
 Finally, housekeeping will perform periodic consistency checks looking for tokens in Redis but not in the ``token`` table or vice versa, orphaned child tokens (entries in ``subtoken`` with a ``NULL`` for ``parent``), circular token relationships, unknown services, unknown scopes, or scope columns that aren't in sorted order or separated by commas.
 Inconsistencies such as these will be flagged for an administrator.
 
+.. _bootstrap:
+
 Bootstrapping
 -------------
 
@@ -521,6 +530,8 @@ The cursor may also begin with the letter ``p`` for links to the previous page.
 In this case, the relations in the SQL query are reversed (newer than or equal to the timestamp, unique IDs greater than or equal to the one in the cursor).
 
 The pagination links use the ``Link`` (see `RFC-8288`_) header to move around in the results, and an ``X-Total-Count`` custom header with the total number of results.
+
+.. _RFC-8288: https://tools.ietf.org/html/rfc8288
 
 Example headers for a paginated result::
 
