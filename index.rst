@@ -176,7 +176,7 @@ An index of current extant tokens is stored via the following schema:
        username   VARCHAR(64)     NOT NULL,
        token_type token_type_enum NOT NULL,
        token_name VARCHAR(64),
-       scopes     VARCHAR(256),
+       scopes     VARCHAR(256)    NOT NULL,
        service    VARCHAR(64),
        created    TIMESTAMP       NOT NULL,
        last_used  TIMESTAMP,
@@ -185,9 +185,10 @@ An index of current extant tokens is stored via the following schema:
    );
    CREATE INDEX token_by_username ON token (username, token_type, service);
 
-The ``scopes`` column, if present, is a sorted, comma-separated list of scopes.
-(This representation makes it easier to find an existing subtoken with a desired scope than a normalized table.)
-If a token has a ``scopes`` of ``NULL``, it can be used for any purpose (although some actions are restricted to session tokens).
+The ``scopes`` column is a sorted, comma-separated list of scopes.
+If a token has no scopes, the value will be an empty string.
+This representation makes it easier to find an existing subtoken with a desired scope than a normalized table.
+
 The ``service`` column is only used by internal tokens.
 It stores an identifier for the service to which the token was issued and which is acting on behalf of a user.
 (Tokens of type service put the name of the service in the ``username`` field.)
@@ -250,7 +251,7 @@ Changes to tokens are stored in a separate history table.
        token_type     token_type_enum   NOT NULL,
        token_name     VARCHAR(64),
        parent         VARCHAR(64),
-       scopes         VARCHAR(256),
+       scopes         VARCHAR(256)      NOT NULL,
        service        VARCHAR(64),
        expires        TIMESTAMP,
        actor          VARCHAR(64)       NOT NULL,
@@ -272,6 +273,8 @@ The ``token_name``, ``scopes``, and ``expires`` fields hold the values for that 
 In other words, if the action is ``edit``, they hold the values after the completion of the edit.
 The columns ``old_token_name``, ``old_scopes``, and ``old_expires`` hold the previous values or ``NULL`` if that value wasn't changed.
 They are always ``NULL`` for an action other than ``edit``.
+Note that ``old_expires`` may be ``NULL`` and still indicate a change in ``expires`` from a previous value of ``NULL``.
+Compare ``old_expires`` to ``expires`` to see if the field was changed.
 
 User metadata is not recorded in the ``token_change_history`` table, even though this would be desirable for debugging some issues, because the longer-term goal is to remove all user metadata from the token component of the system.
 
