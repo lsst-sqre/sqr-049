@@ -676,6 +676,36 @@ For all routes listed below with a ``username`` path parameter, only tokens with
     Revoke a token.
     This also recursively revokes all child tokens of that token.
 
+``GET /auth/api/v1/users/{username}/tokens/{key}/change-history``
+    Return the change history information for a single token.
+    Example:
+
+    .. code-block:: json
+
+       [
+         {
+           "token": "N7PClcZ9zzF5xV-KR7vH3w",
+           "token_name": "personal laptop",
+           "token_type": "user",
+           "scopes": ["user:read"],
+           "actor": "charlotte",
+           "action": "create",
+           "ip_address": "192.88.99.2",
+           "timestamp": 1600725748
+         },
+         {
+           "token": "N7PClcZ9zzF5xV-KR7vH3w",
+           "token_name": "personal laptop",
+           "token_type": "user",
+           "scopes": ["user:read", "user:write"],
+           "actor": "charlotte",
+           "action": "edit",
+           "old_scopes": ["user:read"],
+           "ip_address": "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+           "timestamp": 1600725767
+         }
+       ]
+
 ``GET /auth/api/v1/users/{username}/token-auth-history``
     Get a history of authentication events for the given user.
     The range of events can be controlled by pagination and search parameters included in the URL:
