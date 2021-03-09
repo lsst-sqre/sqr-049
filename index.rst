@@ -1139,13 +1139,14 @@ If one does not exist, a new child token with appropriate values will be created
 The child token inherits its values (such as the temporarily-stored user metadata) from the parent token, except for its expiration (see below).
 The parent token may be of any type, including another internal token, creating chains of delegated tokens.
 
-If the parent token has an expiration, the child token inherits its expiration from the parent token.
-If the parent token does not expire, the child token should still have an expiration to reduce its power.
-That expiration is configurable (globally) and will start at two days.
+Child tokens have a maximum lifetime to limit their power.
+That lifetime is configurable (globally) and will start at two days.
 We will adjust that configuration if this isn't long enough for long-running API calls or batch processing.
+If a parent token's lifetime is shorter than that maximum lifetime, the child token inherits its expiration from the parent token.
+Otherwise, the child token's lifetime is set to the maximum lifetime.
 
 Before creating a new child token for a given ``delegate_to`` request, the token system will check whether a child token of the given parent token already exists with appropriate ``service`` and ``scope``.
-If so, that existing token will be used instead of issuing a new one provided that either its expiration matches that of the parent token or, for parent tokens that don't expire, its expiration is not more than half exhausted.
+If so, that existing token will be used instead of issuing a new one provided that either its expiration matches that of the parent token or, for parent tokens that do not expire or whose remaining lifetime is longer than half the maximum lifetime, its expiration is not more than half exhausted.
 In other words, an internal token created from a non-expiring parent token with the starting two day lifespan will be reused for a day, after which a new one will be created.
 
 To avoid the latency of database queries in the common case of multiple requests with the same token to a service requesting the same ``service`` and ``scope`` values for an internal token, the ``auth_request`` handler may internally cache a mapping of parent token to child tokens for given ``service`` and ``scope`` values.
