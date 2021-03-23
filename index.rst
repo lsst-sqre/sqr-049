@@ -1156,6 +1156,73 @@ After that point, a new child token for that ``service`` and ``scope`` pair will
 This cache will be stored in memory for each worker and lost if that worker is restarted.
 Reconstructing the cache is relatively inexpensive (just a few SQL queries for the first time a worker sees that parent token, ``service``, and ``scope`` tuple).
 
+Kubernetes secrets
+==================
+
+In a couple of cases, Gafaelfawr tokens will need to be maintained as Kubernetes secrets.
+
+Service tokens
+--------------
+
+Normally, protected services will request a delegated token on behalf of the user and make other API calls using that token.
+However, in some cases services will need to make calls on their own behalf.
+Examples include administrative services for user provisioning, monitoring systems that need to forge user tokens to test as a user, and internal systems that are easier to deploy as individual microservices that need to authenticate to each other.
+
+To support this use case, the token management system can be configured to maintain a valid service token in a Kubernetes secret.
+That secret can then be made available to the service that needs it through normal Kubernetes mechanisms.
+
+In the initial implementation, this will be done by configuring the token management system with a list of secrets to manage.
+A periodic job (implemented via a Kubernetes ``CronJob`` resource) will verify that all of those tokens exist, create them if they are missing, and reissue the token if it somehow became invalid.
+
+Tokens managed in this way will be labeled with:
+
+.. code-block:: yaml
+
+   gafaelfawr.lsst.io/token-type: service
+
+The token will be stored in the ``token`` key of the secret.
+Any tokens with that label that are not mentioned in the configuration will be deleted (to clean up old, no-longer-needed tokens).
+
+In a later iteration, this configuration will be replaced with a custom resource definition.
+Services that need a service token will indicate that need by creating a custom Kubernetes resource, and the token management system will create and manage a secret derived from that resource.
+
+Notebook tokens
+---------------
+
+Notebook tokens are the child tokens delegated to a instance of the Notebook Aspect.
+They have the same scopes as the user's authentication token and are used for API calls and other authenticated activities from inside the Kubernetes cluster.
+
+Notebook tokens are child token's of the user's browser session token and thus inherit its lifetime.
+Browser session tokens should expire regularly to minimize the possible damage from cookie leaks and to aid with off-boarding.
+However, users may wish to keep a notebook session running for an extended period for convenience.
+
+The implication is that the token management system must be able to renew the notebook token associated with a running notebook.
+This can be done via a Kubernetes secret mounted in the notebook pod, but then the Kubernetes secret must be refreshed.
+Ideally, this would be done inside JupyterHub, but there does not appear to be a useful hook for noticing when a user returns to a running notebook and updating Kubernetes resources.
+
+Therefore, notebook tokens will be handled as follows:
+
+#. When a user spawns a notebook, the delegated notebook token JupyterHub receives will be stored in a Kubernetes secret.
+   The token will be in the ``token`` data key of the secret.
+   The secret will be labeled with:
+
+   .. code-block:: yaml
+
+      gafaelfawr.lsst.io/token-type: notebook
+
+#. The token management system will periodically scan Kubernetes for all secrets with this label.
+   If the token contained in the secret is still a valid notebook token and it has exhausted more than half its lifetime, the token management system will create a new notebook token for the same user and replace the token in the secret with that new token.
+
+#. Kubernetes will then notice that the secret has been modified and update the mounted token inside the running notebook.
+
+Note that this requires all code running in the notebook that needs to use an authentication token to periodically re-read the token from disk and not rely on a cached token (either in the environment or in code).
+Otherwise, it won't see the refreshed tokens.
+
+This artificially extends the lifetime of notebook tokens beyond the lifetime of the token that originally created them.
+The security effect is to make notebook tokens renewable.
+In the case of an incident in which a user's account may have been compromised, it will therefore be important to invalidate all notebook tokens as well as all session tokens.
+This will immediately invalidate the existing token and also tell the token management system to stop refreshing it.
+
 .. _references:
 
 References
