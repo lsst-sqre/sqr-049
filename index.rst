@@ -324,6 +324,7 @@ All of these fields are optional; tokens of type service may not have any of the
 However, some services may reject authentications that don't have an associated ``uid`` value.
 
 - **name**: The user's preferred full name
+- **email**: The user's email address
 - **uid**: The user's unique numeric UID
 - **groups**: The user's group membership as a list of dicts with two keys, **name** and **id** (the unique numeric GID of the group)
 
@@ -833,6 +834,7 @@ For all routes listed below with a ``username`` path parameter, only tokens with
        {
          "username": "alice",
          "name": "Alice Example",
+         "email": "alice@example.com",
          "uid": 24187,
          "groups": [
            {
@@ -896,6 +898,7 @@ The ``/auth/api/v1/admins`` API is a temporary stopgap until the group system sp
     Only user and service tokens may be created this way.
     Tokens of other types are created through non-API flows described later.
     The username, token type, token name (for a user token), scopes, and desired expiration are provided as parameters.
+    The full name, email address, numeric UID, and group membership may also be provided and will populate the user metadata associated with this token.
     Example request:
 
     .. code-block:: json
