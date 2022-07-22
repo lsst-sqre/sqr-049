@@ -10,6 +10,25 @@ This document lays out the technical design of the token management component, s
 
 .. _SQR-044: https://sqr-044.lsst.io/
 
+.. warning::
+
+   This tech note is an obsolete design document for the token management component of the Science Platform identity management system.
+   The design presented here has been heavily revised and is no longer current.
+   See the Gafaelfawr_ documentation for the current token API, and DMTN-224_ and SQR-069_ for more up-to-date implementation details including storage formats.
+
+   Still of possible interest in this document are the Kafka design, the specification for the housekeeping process, the API for authentication history, and the details of the desired token UI.
+   These have not yet been implemented, and the design in this tech note is still the most recent.
+   If they are implemented, newer designs will be incorporated into DMTN-234_ and DMTN-224_.
+
+   This is part of a tech note series on identity management for the Rubin Science Platform.
+   The primary documents are DMTN-234_, which describes the high-level design; DMTN-224_, which describes the implementation; and SQR-069_, which provides a history and analysis of the decisions underlying the design and implementation.
+   See the `references section of DMTN-224 <https://dmtn-224.lsst.io/#references>`__ for a complete list of related documents.
+
+.. _Gafaelfawr: https://gafaelfawr.lsst.io/
+.. _DMTN-234: https://dmtn-234.lsst.io/
+.. _DMTN-224: https://dmtn-224.lsst.io/
+.. _SQR-069: https://sqr-069.lsst.io/
+
 Scope
 =====
 
